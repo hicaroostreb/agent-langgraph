@@ -154,7 +154,9 @@ def process_json_and_store_embeddings(json_file_path):
                     perguntas_relacionadas = (
                         item.get("perguntas_relacionadas", []) or []
                     )
-                    embedding_input = item.get("embedding_input", "").strip()
+                    embedding_input = (
+                        item.get("embedding_input", "").replace("passage: ", "").strip()
+                    )
 
                     # Validar se o campo embedding_input não está vazio
                     if not embedding_input:

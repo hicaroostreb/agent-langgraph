@@ -2,7 +2,7 @@ import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
-from typing import List, Optional
+from typing import List
 
 load_dotenv()
 
@@ -21,7 +21,7 @@ class SupabaseVectorDB:
 
     def _connect(self):
         """Estabelece conexão com o banco."""
-        if self._connection is None or self._connection.closed:
+        if not self._connection or self._connection.closed != 0:
             try:
                 self._connection = psycopg2.connect(
                     host=DB_HOST,
@@ -31,75 +31,42 @@ class SupabaseVectorDB:
                     port=DB_PORT,
                 )
                 self._connection.autocommit = True
-            except Exception as e:
+            except psycopg2.Error as e:
                 raise ConnectionError(f"Erro ao conectar ao banco: {e}")
 
     def close(self):
-        """Fecha conexão com o banco."""
+        """Fecha a conexão com o banco."""
         if self._connection and not self._connection.closed:
             self._connection.close()
-
-    def _format_embedding(self, embedding: List[float]) -> str:
-        """Formata lista de floats para o tipo vector do PostgreSQL."""
-        return "ARRAY[%s]" % ", ".join(map(str, embedding))  # Convertendo para array
 
     def search_similar_faqs(
         self,
         query_embedding: List[float],
-        top_k: int = 5,
-        categoria: Optional[str] = None,
-        tags: Optional[List[str]] = None,
-        similarity_threshold: float = 0.6,
+        top_k: int = 3,
+        similarity_threshold: float = 0.4,
     ) -> List[dict]:
-        """
-        Busca as FAQs mais semelhantes usando pgvector.
-        Filtros por categoria e tags são opcionais.
-        """
+        """Busca as FAQs mais semelhantes usando pgvector."""
         self._connect()
-        formatted_embedding = self._format_embedding(query_embedding)
-        filters = []
-        params = []
 
-        if categoria:
-            filters.append("metadata->>'categoria' = %s")
-            params.append(categoria)
-
-        if tags:
-            filters.append(
-                "metadata->'tags' ?| array[%s]" % ", ".join(["%s"] * len(tags))
-            )
-            params.extend(tags)
-
-        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
-
-        query = f"""
+        query = """
             SELECT
                 id,
                 pergunta,
                 resposta,
-                metadata->>'categoria' AS categoria,
-                metadata,
-                1 - (embedding <=> {formatted_embedding}::vector) AS similaridade
+                1 - (embedding <=> %s::vector) AS similaridade
             FROM faq_embeddings
-            {where_clause}
-            HAVING 1 - (embedding <=> {formatted_embedding}::vector) >= %s
             ORDER BY similaridade DESC
             LIMIT %s;
         """
-        params.append(
-            similarity_threshold
-        )  # Adiciona o limiar diretamente nos parâmetros da consulta
-        params.append(top_k * 2)  # Pega mais do que precisa, para filtrar depois
-
         try:
             with self._connection.cursor(cursor_factory=RealDictCursor) as cursor:
-                cursor.execute(query, params)
+                cursor.execute(query, (query_embedding, top_k * 2))
                 results = cursor.fetchall()
         except Exception as e:
             print(f"Erro ao executar a consulta: {e}")
             return []
 
-        return results[:top_k]
+        return [r for r in results if r["similaridade"] >= similarity_threshold][:top_k]
 
     def __del__(self):
         self.close()
